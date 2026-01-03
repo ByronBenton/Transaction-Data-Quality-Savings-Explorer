@@ -70,6 +70,10 @@ if option == "Upload my own CSV":
         st.stop()
 
     df = pd.read_csv(uploaded)
+    required_cols = ["Transaction ID", "Merchant", "Amount", "Zip Code", "Tax ID"]
+    if not all(col in df.columns for col in required_cols):
+        st.error(f"CSV must contain columns: {required_cols}")
+        st.stop()
 else:
     df = generate_mock_data()
     st.success("Using generated mock dataset")
@@ -79,10 +83,9 @@ else:
 # --------------------------------------------------
 df["Missing Zip"] = df["Zip Code"].isna()
 df["Missing Tax ID"] = df["Tax ID"].isna()
-
 df["Has Missing Info"] = df["Missing Zip"] | df["Missing Tax ID"]
 
-# Savings logic (simple + illustrative)
+# Savings logic
 FEE_RATE = 0.005
 df["Potential Savings ($)"] = np.where(
     df["Has Missing Info"],
@@ -91,11 +94,43 @@ df["Potential Savings ($)"] = np.where(
 )
 
 # --------------------------------------------------
+# Progress Bar for Data Completion
+# --------------------------------------------------
+st.subheader("📈 Data Completion Progress")
+total_txn = len(df)
+completed_txn = len(df[~df["Has Missing Info"]])
+completion_pct = completed_txn / total_txn
+st.progress(completion_pct)
+st.caption(f"{completion_pct*100:.0f}% of transaction data optimized – Unlock {100 - completion_pct*100:.0f}% more savings!")
+
+# --------------------------------------------------
+# Filters
+# --------------------------------------------------
+st.subheader("🔎 Filters")
+missing_filter = st.multiselect(
+    "Show transactions with:",
+    ["Missing Zip", "Missing Tax ID", "Complete"],
+    default=["Missing Zip", "Missing Tax ID"]
+)
+
+filter_mask = pd.Series(False, index=df.index)
+if "Missing Zip" in missing_filter:
+    filter_mask |= df["Missing Zip"]
+if "Missing Tax ID" in missing_filter:
+    filter_mask |= df["Missing Tax ID"]
+if "Complete" in missing_filter:
+    filter_mask |= ~df["Has Missing Info"]
+
+filtered_df = df[filter_mask]
+
+# --------------------------------------------------
 # Interactive Table
 # --------------------------------------------------
 st.subheader("🔍 Transactions with Missing Information")
 
-display_df = df.copy()
+display_df = filtered_df.copy()
+
+# ✅ All rows unchecked by default
 display_df["Fix"] = False
 
 edited_df = st.data_editor(
@@ -122,46 +157,56 @@ edited_df = st.data_editor(
 )
 
 # --------------------------------------------------
-# Savings Calculation
+# Real-Time Savings Calculation
 # --------------------------------------------------
 fixed_rows = edited_df[edited_df["Fix"] == True]
-
 total_savings = fixed_rows["Potential Savings ($)"].sum()
-
 st.metric(
     label="💰 Total Potential Savings Unlocked",
     value=f"${total_savings:,.2f}"
 )
 
-# --------------------------------------------------
-# Clickable Row Details
-# --------------------------------------------------
+# Display details of all fixed rows
 if not fixed_rows.empty:
     st.subheader("📌 Selected Transaction Details")
-
-    row = fixed_rows.iloc[-1]
-
-    st.success(
-        f"""
-        **Transaction ID:** {row['Transaction ID']}  
-        **Merchant:** {row['Merchant']}  
-        **Amount:** ${row['Amount']:.2f}  
-        **Savings if Fixed:** ${row['Potential Savings ($)']:.2f}
-        """
-    )
+    for _, row in fixed_rows.iterrows():
+        st.success(
+            f"""
+            **Transaction ID:** {row['Transaction ID']}  
+            **Merchant:** {row['Merchant']}  
+            **Amount:** ${row['Amount']:.2f}  
+            **Savings if Fixed:** ${row['Potential Savings ($)']:.2f}
+            """
+        )
 
 # --------------------------------------------------
-# Top Merchants Chart
+# Collapsible Merchant List
 # --------------------------------------------------
-st.subheader("📊 Top 5 Merchants by Savings Potential")
+st.subheader("📊 Merchant Savings Overview")
 
 merchant_savings = (
     df.groupby("Merchant")["Potential Savings ($)"]
     .sum()
     .sort_values(ascending=False)
-    .head(5)
 )
 
-st.bar_chart(merchant_savings)
+# Top 5 by default
+st.bar_chart(merchant_savings.head(5))
+
+# Expandable full list
+with st.expander("Show all merchants"):
+    st.bar_chart(merchant_savings)
 
 # --------------------------------------------------
+# Tooltips for Key Terms
+# --------------------------------------------------
+st.markdown(
+    """
+    **Tooltips:**  
+    - **Potential Savings ($)** 💰 <span title="Estimated savings if missing data is fixed, assuming 0.5% extra fees">ℹ️</span>  
+    - **Missing Zip** <span title="Indicates if the Zip Code for the transaction is missing">ℹ️</span>  
+    - **Missing Tax ID** <span title="Indicates if the Tax ID for the transaction is missing">ℹ️</span>  
+    - **Fix** <span title="Check this box if you have corrected the missing information for this transaction">ℹ️</span>
+    """,
+    unsafe_allow_html=True
+)
